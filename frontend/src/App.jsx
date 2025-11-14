@@ -190,12 +190,12 @@ export default function App() {
                     key={idx}
                     className="border rounded-lg overflow-hidden bg-gray-100"
                   >
-                    <div className="aspect-video bg-gray-200 flex items-center justify-center">
+                    <div className="aspect-video bg-gray-200 flex items-center justify-center overflow-hidden">
                       {img.detection.annotated_image && (
                         <img
                           src={img.detection.annotated_image}
                           alt={`Upload ${idx}`}
-                          className="w-full h-full object-cover"
+                          className="w-full h-full object-contain"
                         />
                       )}
                     </div>
@@ -409,7 +409,7 @@ export default function App() {
                           <img
                             src={det.annotated_image}
                             alt={`Return ${idx}`}
-                            className="w-full h-full object-cover"
+                            className="w-full h-full object-contain"
                           />
                         )}
                       </div>

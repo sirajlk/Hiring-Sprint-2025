@@ -40,10 +40,10 @@ class Detection:
   return net
 
  def __extract_output(self, 
-      preds: ndarray, 
+   preds: ndarray, 
    image_shape: Tuple[int, int], 
    input_shape: Tuple[int, int],
-   score: float=0.1,
+   score: float=0.005,
    nms: float=0.0, 
    confidence: float=0.0
   ) -> dict:
@@ -56,24 +56,22 @@ class Detection:
   
   rows = preds[0].shape[0]
   for i in range(rows):
-   row = preds[0][i]
-   conf = row[4]
-   
-   classes_score = row[4:]
-   _,_,_, max_idx = cv2.minMaxLoc(classes_score)
-   class_id = max_idx[1]
-   if (classes_score[class_id] > score):
-    confs.append(conf)
-    label = self.classes[int(class_id)]
-    class_ids.append(label)
-    
-    x, y, w, h = row[0].item(), row[1].item(), row[2].item(), row[3].item() 
-    left = int((x - 0.5 * w) * x_factor)
-    top = int((y - 0.5 * h) * y_factor)
-    width = int(w * x_factor)
-    height = int(h * y_factor)
-    box = np.array([left, top, width, height])
-    boxes.append(box)
+     row = preds[0][i]
+     conf = row[4]
+     classes_score = row[4:]
+     # For each class above threshold, add a detection
+     for class_id, class_score in enumerate(classes_score):
+        if class_score > score:
+         label = self.classes[int(class_id)]
+         confs.append(conf)
+         class_ids.append(label)
+         x, y, w, h = row[0].item(), row[1].item(), row[2].item(), row[3].item()
+         left = int((x - 0.5 * w) * x_factor)
+         top = int((y - 0.5 * h) * y_factor)
+         width = int(w * x_factor)
+         height = int(h * y_factor)
+         box = np.array([left, top, width, height])
+         boxes.append(box)
 
   r_class_ids, r_confs, r_boxes = list(), list(), list()
   indexes = cv2.dnn.NMSBoxes(boxes, confs, confidence, nms)
@@ -100,13 +98,18 @@ class Detection:
    left, top, width, height = box
    color = self.colors[idx % len(self.colors)]
    
-   cv2.rectangle(annotated_image, (left, top), (left + width, top + height), color, 2)
+   # Thinner box (thickness=1) to reduce clutter
+   cv2.rectangle(annotated_image, (left, top), (left + width, top + height), color, 1)
    
-   label = f"{classes[idx]}: {confidences[idx]:.1f}%"
-   (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+   # Smaller label text to save space
+   label = f"{classes[idx]}"
+   font_scale = 0.35
+   font_thickness = 1
+   (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)
    
-   cv2.rectangle(annotated_image, (left, top - text_height - 10), (left + text_width, top), color, -1)
-   cv2.putText(annotated_image, label, (left, top - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+   # Draw label background with minimal padding
+   cv2.rectangle(annotated_image, (left, top - text_height - 4), (left + text_width + 2, top), color, -1)
+   cv2.putText(annotated_image, label, (left + 1, top - 2), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
   
   return annotated_image
 
@@ -114,7 +117,7 @@ class Detection:
    image: ndarray, 
    width: int=640, 
    height: int=640, 
-   score: float=0.1,
+   score: float=0.005,
    nms: float=0.0, 
    confidence: float=0.0,
    return_annotated: bool=False
@@ -140,11 +143,12 @@ class Detection:
   if return_annotated:
    annotated_image = self.__draw_boxes(image, results)
    annotated_rgb = cv2.cvtColor(annotated_image, cv2.COLOR_BGR2RGB)
-   _, buffer = cv2.imencode('.png', annotated_rgb)
+   # Use higher quality JPEG (95% quality) for better image fidelity
+   _, buffer = cv2.imencode('.jpg', annotated_rgb, [cv2.IMWRITE_JPEG_QUALITY, 95])
    img_base64 = base64.b64encode(buffer).decode('utf-8')
-   results['annotated_image'] = f"data:image/png;base64,{img_base64}"
+   results['annotated_image'] = f"data:image/jpeg;base64,{img_base64}"
   
-  return results 
+  return results
 
 detection = Detection(
    model_path=os.path.join(os.path.dirname(__file__), 'best.onnx'), 
