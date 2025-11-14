@@ -6,12 +6,15 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 import cv2
-from typing import List
+from typing import List, Dict, Optional
 from numpy import ndarray
 from typing import Tuple
 from PIL import Image
 import base64
 from fastapi import Response
+import json
+from datetime import datetime
+import uuid
   
   
 
@@ -160,6 +163,9 @@ REPAIR_COSTS = {
     'damaged wind shield': {'min': 200, 'max': 500}
 }
 
+# In-memory store for inspection sessions
+inspection_sessions: Dict[str, Dict] = {}
+
 app = FastAPI(title="Car Damage Detection API")
 
 app.add_middleware(
@@ -174,26 +180,171 @@ app.add_middleware(
 def read_root():
     return {
         "message": "Car Damage Detection API",
-        "version": "1.0",
+        "version": "2.0",
         "endpoints": {
-            "/api/detection": "POST - Upload image for damage detection",
+            "/api/inspection/start": "POST - Start a new inspection session (pickup phase)",
+            "/api/inspection/{session_id}/detect": "POST - Detect damages in uploaded image",
+            "/api/inspection/{session_id}/complete": "POST - Complete inspection and compare pickup vs return",
+            "/api/detection": "POST - Legacy single image detection (deprecated)",
         }
     }
 
-@app.post('/api/detection')
-def post_detection(file: bytes = File(...)):
-   image = Image.open(io.BytesIO(file)).convert("RGB")
-   image = np.array(image)
-   image = image[:,:,::-1].copy()
-   results = detection(image, return_annotated=True)
-   
-   repair_costs = []
-   for damage_type in results.get('classes', []):
-       cost = REPAIR_COSTS.get(damage_type.lower(), {'min': 100, 'max': 500})
-       repair_costs.append(cost)
-   
-   results['repair_costs'] = repair_costs
-   return results
+@app.post('/api/inspection/start')
+def start_inspection():
+    """Start a new inspection session (pickup phase)"""
+    session_id = str(uuid.uuid4())
+    inspection_sessions[session_id] = {
+        'session_id': session_id,
+        'created_at': datetime.now().isoformat(),
+        'pickup_detections': [],
+        'return_detections': [],
+        'phase': 'pickup'
+    }
+    return {'session_id': session_id, 'message': 'Inspection started - in pickup phase'}
+
+@app.post('/api/inspection/{session_id}/detect')
+def detect_damage_in_session(session_id: str, file: bytes = File(...)):
+    """
+    Detect damages in uploaded image and store in session.
+    When called during 'pickup' phase, stores as pickup damage.
+    When called during 'return' phase, stores as return damage.
+    """
+    if session_id not in inspection_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    session = inspection_sessions[session_id]
+    
+    # Detect damages in the image
+    image = Image.open(io.BytesIO(file)).convert("RGB")
+    image = np.array(image)
+    image = image[:,:,::-1].copy()
+    results = detection(image, return_annotated=True)
+    
+    # Add repair costs
+    repair_costs = []
+    for damage_type in results.get('classes', []):
+        cost = REPAIR_COSTS.get(damage_type.lower(), {'min': 100, 'max': 500})
+        repair_costs.append(cost)
+    
+    results['repair_costs'] = repair_costs
+    
+    # Store in appropriate phase
+    if session['phase'] == 'pickup':
+        session['pickup_detections'].append(results)
+    else:
+        session['return_detections'].append(results)
+    
+    return {
+        'session_id': session_id,
+        'phase': session['phase'],
+        'detections_count': len(session['pickup_detections']) if session['phase'] == 'pickup' else len(session['return_detections']),
+        'current_detection': results
+    }
+
+@app.post('/api/inspection/{session_id}/switch-to-return')
+def switch_to_return_phase(session_id: str):
+    """Switch inspection from pickup phase to return phase"""
+    if session_id not in inspection_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    session = inspection_sessions[session_id]
+    session['phase'] = 'return'
+    
+    return {
+        'session_id': session_id,
+        'message': 'Switched to return phase',
+        'pickup_images_count': len(session['pickup_detections'])
+    }
+
+@app.post('/api/inspection/{session_id}/complete')
+def complete_inspection(session_id: str):
+    """
+    Complete the inspection and compare pickup vs return damages.
+    Returns only NEW damages (damages in return that weren't in pickup).
+    """
+    if session_id not in inspection_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    session = inspection_sessions[session_id]
+    
+    # Extract all damage types from pickup
+    pickup_damages = []
+    for detection_result in session['pickup_detections']:
+        pickup_damages.extend(detection_result.get('classes', []))
+    
+    # Extract all damage types from return
+    return_damages = []
+    return_detections_with_boxes = []
+    for detection_result in session['return_detections']:
+        return_damages.extend(detection_result.get('classes', []))
+        return_detections_with_boxes.append(detection_result)
+    
+    # Find NEW damages: damages in return that weren't in pickup
+    # Count occurrences to handle multiple same damages
+    pickup_damage_counts = {}
+    for dmg in pickup_damages:
+        pickup_damage_counts[dmg] = pickup_damage_counts.get(dmg, 0) + 1
+    
+    return_damage_counts = {}
+    for dmg in return_damages:
+        return_damage_counts[dmg] = return_damage_counts.get(dmg, 0) + 1
+    
+    # Calculate new damages
+    new_damages = []
+    new_damage_counts = {}
+    for damage_type, count in return_damage_counts.items():
+        pickup_count = pickup_damage_counts.get(damage_type, 0)
+        if count > pickup_count:
+            new_count = count - pickup_count
+            new_damages.extend([damage_type] * new_count)
+            new_damage_counts[damage_type] = new_count
+    
+    # Calculate costs for new damages
+    total_min_cost = 0
+    total_max_cost = 0
+    new_damages_breakdown = []
+    
+    for damage_type, count in new_damage_counts.items():
+        cost = REPAIR_COSTS.get(damage_type.lower(), {'min': 100, 'max': 500})
+        total_min_cost += cost['min'] * count
+        total_max_cost += cost['max'] * count
+        new_damages_breakdown.append({
+            'damage_type': damage_type,
+            'count': count,
+            'cost_per_unit': cost
+        })
+    
+    # Prepare response
+    response = {
+        'session_id': session_id,
+        'inspection_summary': {
+            'pickup_phase': {
+                'images_uploaded': len(session['pickup_detections']),
+                'total_damages': len(pickup_damages),
+                'damages_by_type': pickup_damage_counts
+            },
+            'return_phase': {
+                'images_uploaded': len(session['return_detections']),
+                'total_damages': len(return_damages),
+                'damages_by_type': return_damage_counts
+            }
+        },
+        'new_damages_detected': {
+            'total_new_damages': len(new_damages),
+            'damages_breakdown': new_damages_breakdown,
+            'estimated_repair_cost': {
+                'min': total_min_cost,
+                'max': total_max_cost,
+                'average': (total_min_cost + total_max_cost) // 2
+            }
+        },
+        'return_detections_with_boxes': return_detections_with_boxes
+    }
+    
+    # Cleanup session
+    del inspection_sessions[session_id]
+    
+    return response
 
 
 
