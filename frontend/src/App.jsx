@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import axios from "axios";
 
-const API_BASE = "https://hiring-sprint-2025.onrender.com/";
+const API_BASE = "https://hiring-sprint-2025.onrender.com";
 
 export default function App() {
   const [sessionId, setSessionId] = useState(null);
