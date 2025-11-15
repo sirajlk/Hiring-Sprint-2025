@@ -9,7 +9,14 @@ when trying to check for damages get a damaged car with either one of these i wa
 
 so these are the types of damages it can understand but ofcourse i couldnt make it perfect as sometimes it give wrong ones but ofcourse if i had more time i wouldve teached it more and made a better way 
 
+## what would i have done diferently if i had more time 
+first problem was i didnt have a good data for pricing which made me put random repair costs for diferent damage classes so first id have made sure its getting real pricing 
 
+and another thing the model sometimes give wrong answers so id work on it and train it in a better way try adding maybe more layers or train it for longer time and try fix the problem 
+
+i tried to make a good ci cd but the time wasnt enoguh so i just made anything and for the docker file i cant run docker on my laptop as it would brake the laptop so i wasnt able to work on that as well so i just made an ai code and puted it hopefully it would work 
+
+and ofcurse idve worked more on ui and ux and the feel of the webapp 
 ### Prerequisites
 
 - Python 3.8+
