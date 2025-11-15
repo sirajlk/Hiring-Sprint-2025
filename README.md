@@ -2,6 +2,14 @@
 
 ## Quick Start (48-hour build)
 
+## Very Important Note 
+when trying to check for damages get a damaged car with either one of these i wasnt able to teach it about all damages but i tried teaching it the important ones
+
+'damaged door', 'damaged window', 'damaged headlight', 'damaged mirror', 'dent', 'damaged hood', 'damaged bumper', 'damaged wind shield'
+
+so these are the types of damages it can understand but ofcourse i couldnt make it perfect as sometimes it give wrong ones but ofcourse if i had more time i wouldve teached it more and made a better way 
+
+
 ### Prerequisites
 
 - Python 3.8+
@@ -32,8 +40,6 @@ cd frontend
 npm install
 npm run dev
 ```
-
-Frontend runs at `http://localhost:5173`
 
 ## How It Works
 
