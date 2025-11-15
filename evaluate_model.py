@@ -15,7 +15,7 @@ from tqdm import tqdm
 # Add my_fastapi_app to path so we can import Detection class
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'my_fastapi_app'))
 
-from main import detection, REPAIR_COSTS
+from train import detection, REPAIR_COSTS
 
 def evaluate_model():
     """Evaluate model on all test images"""
