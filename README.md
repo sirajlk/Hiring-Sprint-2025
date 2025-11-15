@@ -137,3 +137,4 @@ The solution is modular and can be integrated into a larger car rental SaaS:
 ---
 
 **Built for hackathon speed. Ready for production use.** ⚡
+*
