@@ -5,6 +5,9 @@ import numpy as np
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
+from pydantic import BaseModel, Field
+from typing import List as ListType
 import cv2
 from typing import List, Dict, Optional
 from numpy import ndarray
@@ -45,7 +48,7 @@ class Detection:
    input_shape: Tuple[int, int],
    score: float=0.005,
    nms: float=0.0, 
-   confidence: float=0.0
+   confidence: float=0.0001
   ) -> dict:
   class_ids, confs, boxes = list(), list(), list()
 
@@ -119,7 +122,7 @@ class Detection:
    height: int=640, 
    score: float=0.005,
    nms: float=0.0, 
-   confidence: float=0.0,
+   confidence: float=0.0001,
    return_annotated: bool=False
   ) -> dict:
   
@@ -157,20 +160,51 @@ detection = Detection(
 
 
 REPAIR_COSTS = {
-    'damaged door': {'min': 300, 'max': 1500},
+    'damaged door': {'min': 700, 'max': 1500},
     'damaged window': {'min': 200, 'max': 400},
     'damaged headlight': {'min': 200, 'max': 780},
     'damaged mirror': {'min': 140, 'max': 330},
     'dent': {'min': 150, 'max': 600},
-    'damaged hood': {'min': 300, 'max': 1500},
-    'damaged bumper': {'min': 325, 'max': 1000},
+    'damaged hood': {'min': 800, 'max': 1500},
+    'damaged bumper': {'min': 525, 'max': 1000},
     'damaged wind shield': {'min': 200, 'max': 500}
 }
 
 # In-memory store for inspection sessions
 inspection_sessions: Dict[str, Dict] = {}
 
-app = FastAPI(title="Car Damage Detection API")
+app = FastAPI(
+    title="🚗 Car Damage Detection & Estimation API",
+    description="""
+    A comprehensive REST API for automated car damage detection, categorization, and cost estimation.
+    
+    **Features:**
+    - Session-based inspection workflow (pickup and return phases)
+    - Multi-image damage detection per session
+    - Automatic damage comparison (pickup vs return)
+    - Intelligent cost estimation for repairs
+    - OpenCV DNN-based ONNX model inference
+    
+    **Workflow:**
+    1. Start an inspection session (GET session ID)
+    2. Upload multiple pickup-phase images for damage detection
+    3. Switch to return phase
+    4. Upload multiple return-phase images for damage detection
+    5. Complete inspection to receive comparison and cost estimate
+    
+    **Authentication:** Not required (open API for hackathon)
+    
+    **Response Format:** JSON
+    """,
+    version="2.0",
+    contact={
+        "name": "Damage Estimator Team",
+        "url": "https://github.com/sirajlk/Hiring-Sprint-2025"
+    },
+    license_info={
+        "name": "MIT"
+    }
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -180,22 +214,56 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/api")
+@app.get("/api", tags=["Info"], summary="API Information", response_description="API metadata and available endpoints")
 def read_root():
+    """
+    Get information about the Car Damage Detection API.
+    
+    Returns API version, description, and list of available endpoints with their purposes.
+    
+    **Returns:**
+    - `message`: API description
+    - `version`: API version
+    - `endpoints`: Dictionary of available endpoints
+    """
     return {
         "message": "Car Damage Detection API",
         "version": "2.0",
         "endpoints": {
             "/api/inspection/start": "POST - Start a new inspection session (pickup phase)",
             "/api/inspection/{session_id}/detect": "POST - Detect damages in uploaded image",
-            "/api/inspection/{session_id}/complete": "POST - Complete inspection and compare pickup vs return",
+            "/api/inspection/{session_id}/switch-to-return": "POST - Switch from pickup to return phase",
+            "/api/inspection/{session_id}/complete": "POST - Complete inspection and compare damages",
             "/api/detection": "POST - Legacy single image detection (deprecated)",
-        }
+        },
+        "docs": "/docs (Swagger UI) or /redoc (ReDoc)"
     }
 
-@app.post('/api/inspection/start')
+@app.post('/api/inspection/start', tags=["Inspection Workflow"], summary="Start Inspection Session", response_description="Session ID and initial phase info")
 def start_inspection():
-    """Start a new inspection session (pickup phase)"""
+    """
+    Initialize a new inspection session for a vehicle.
+    
+    This endpoint creates a new session with a unique ID for tracking an inspection process.
+    The session starts in the **pickup phase**, where you upload images of the vehicle's initial state.
+    
+    **Use this endpoint:**
+    - At the beginning of each inspection to get a session ID
+    
+    **Session Phases:**
+    - `pickup`: Initial state assessment (before damage)
+    - `return`: Final state assessment (after damage)
+    
+    **Returns:**
+    - `session_id`: Unique identifier for this inspection session (UUID)
+    - `message`: Confirmation message
+    
+    **Example:**
+    ```
+    POST /api/inspection/start
+    Response: {"session_id": "550e8400-e29b-41d4-a716-446655440000", "message": "..."}
+    ```
+    """
     session_id = str(uuid.uuid4())
     inspection_sessions[session_id] = {
         'session_id': session_id,
@@ -206,12 +274,39 @@ def start_inspection():
     }
     return {'session_id': session_id, 'message': 'Inspection started - in pickup phase'}
 
-@app.post('/api/inspection/{session_id}/detect')
+@app.post('/api/inspection/{session_id}/detect', tags=["Inspection Workflow"], summary="Detect Damages in Image", response_description="Detection results with annotated image")
 def detect_damage_in_session(session_id: str, file: bytes = File(...)):
     """
-    Detect damages in uploaded image and store in session.
-    When called during 'pickup' phase, stores as pickup damage.
-    When called during 'return' phase, stores as return damage.
+    Analyze an uploaded vehicle image for damage detection.
+    
+    This endpoint uses a trained YOLO8 model to detect various types of vehicle damage.
+    The detections are stored within the session and categorized by phase (pickup or return).
+    
+    **Parameters:**
+    - `session_id` (path): The unique session ID from `/api/inspection/start`
+    - `file` (body): Image file (JPEG, PNG) - vehicle photo to analyze
+    
+    **Detection Classes:**
+    - damaged door, damaged window, damaged headlight, damaged mirror
+    - dent, damaged hood, damaged bumper, damaged wind shield
+    
+    **Returns:**
+    - `session_id`: Your session ID
+    - `phase`: Current phase (pickup or return)
+    - `detections_count`: Total detections uploaded in current phase
+    - `current_detection`: Object containing:
+      - `boxes`: Bounding box coordinates [x, y, width, height]
+      - `confidences`: Detection confidence scores (0-100%)
+      - `classes`: Detected damage types
+      - `repair_costs`: Cost estimate per damage type
+      - `annotated_image`: Base64-encoded image with bounding boxes
+    
+    **Example:**
+    ```
+    POST /api/inspection/{session_id}/detect
+    Content-Type: multipart/form-data
+    file: <image file>
+    ```
     """
     if session_id not in inspection_sessions:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -245,9 +340,34 @@ def detect_damage_in_session(session_id: str, file: bytes = File(...)):
         'current_detection': results
     }
 
-@app.post('/api/inspection/{session_id}/switch-to-return')
+@app.post('/api/inspection/{session_id}/switch-to-return', tags=["Inspection Workflow"], summary="Switch to Return Phase", response_description="Confirmation of phase switch")
 def switch_to_return_phase(session_id: str):
-    """Switch inspection from pickup phase to return phase"""
+    """
+    Transition inspection from pickup phase to return phase.
+    
+    Call this endpoint after uploading all pickup-phase images and ready to upload return-phase images.
+    
+    **Workflow:**
+    1. Start inspection → /api/inspection/start
+    2. Upload pickup images → /api/inspection/{session_id}/detect (multiple times)
+    3. **Switch to return → /api/inspection/{session_id}/switch-to-return** (this endpoint)
+    4. Upload return images → /api/inspection/{session_id}/detect (multiple times)
+    5. Complete inspection → /api/inspection/{session_id}/complete
+    
+    **Parameters:**
+    - `session_id` (path): Your session ID
+    
+    **Returns:**
+    - `session_id`: Your session ID
+    - `message`: Confirmation message
+    - `pickup_images_count`: Number of images uploaded in pickup phase
+    
+    **Example:**
+    ```
+    POST /api/inspection/{session_id}/switch-to-return
+    Response: {"session_id": "...", "message": "Switched to return phase", "pickup_images_count": 3}
+    ```
+    """
     if session_id not in inspection_sessions:
         raise HTTPException(status_code=404, detail="Session not found")
     
@@ -260,11 +380,53 @@ def switch_to_return_phase(session_id: str):
         'pickup_images_count': len(session['pickup_detections'])
     }
 
-@app.post('/api/inspection/{session_id}/complete')
+@app.post('/api/inspection/{session_id}/complete', tags=["Inspection Workflow"], summary="Complete Inspection & Get Cost Estimate", response_description="Comparison results and repair cost estimate")
 def complete_inspection(session_id: str):
     """
-    Complete the inspection and compare pickup vs return damages.
-    Returns only NEW damages (damages in return that weren't in pickup).
+    Finalize inspection and retrieve damage comparison and cost estimate.
+    
+    This endpoint compares pickup and return phase detections to identify **only new damages**.
+    It calculates repair costs based on damage type and provides a comprehensive inspection report.
+    
+    **Smart Comparison:**
+    - Only damages detected in return but NOT in pickup phase are charged
+    - Duplicates are counted (e.g., 3 dents in return vs 1 in pickup = 2 new dents to charge)
+    - Session is automatically cleaned up after completion
+    
+    **Parameters:**
+    - `session_id` (path): Your session ID
+    
+    **Returns:**
+    - `session_id`: Your session ID
+    - `inspection_summary`: 
+      - `pickup_phase`: Images count, total damages, damages by type
+      - `return_phase`: Images count, total damages, damages by type
+    - `new_damages_detected`:
+      - `total_new_damages`: Count of new damages
+      - `damages_breakdown`: List of new damages with cost per unit
+      - `estimated_repair_cost`: Min/max/average cost estimate
+    - `return_detections_with_boxes`: Full detection data from return phase
+    
+    **Example Response:**
+    ```json
+    {
+      "session_id": "...",
+      "inspection_summary": {
+        "pickup_phase": {"images_uploaded": 2, "total_damages": 3, "damages_by_type": {"dent": 3}},
+        "return_phase": {"images_uploaded": 2, "total_damages": 5, "damages_by_type": {"dent": 5}}
+      },
+      "new_damages_detected": {
+        "total_new_damages": 2,
+        "damages_breakdown": [{"damage_type": "dent", "count": 2, "cost_per_unit": {"min": 150, "max": 600}}],
+        "estimated_repair_cost": {"min": 300, "max": 1200, "average": 750}
+      },
+      "return_detections_with_boxes": [...]
+    }
+    ```
+    
+    **After calling this endpoint:**
+    - Session is automatically deleted
+    - To perform another inspection, call `/api/inspection/start` again
     """
     if session_id not in inspection_sessions:
         raise HTTPException(status_code=404, detail="Session not found")

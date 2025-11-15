@@ -1,0 +1,151 @@
+name: CI/CD Pipeline - Test & Deploy
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # Job 1: Run automated tests
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12.4"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Install dependencies
+        working-directory: ./my_fastapi_app
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
+
+      - name: Run tests with pytest
+        working-directory: ./my_fastapi_app
+        run: |
+          pytest test_endpoints.py -v --tb=short --cov=. --cov-report=xml
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./my_fastapi_app/coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
+
+  # Job 2: Build and push Docker image (optional, for registry)
+  build-docker:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./my_fastapi_app
+          file: ./my_fastapi_app/Dockerfile
+          push: false
+          tags: damage-detection-api:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Job 3: Deploy to Render (automated deployment on main branch push)
+  deploy:
+    name: Deploy to Render
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Deploy to Render
+        run: |
+          curl -X POST \
+            https://api.render.com/deploy/srv-${{ secrets.RENDER_SERVICE_ID }} \
+            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}"
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+
+  # Job 4: Run code quality checks (linting, type checking)
+  code-quality:
+    name: Code Quality Checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12.4"
+          cache: "pip"
+
+      - name: Install dependencies
+        working-directory: ./my_fastapi_app
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 black isort
+
+      - name: Run Black (code formatting check)
+        working-directory: ./my_fastapi_app
+        run: black --check .
+        continue-on-error: true
+
+      - name: Run isort (import sorting check)
+        working-directory: ./my_fastapi_app
+        run: isort --check-only .
+        continue-on-error: true
+
+      - name: Run Flake8 (linting)
+        working-directory: ./my_fastapi_app
+        run: flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        continue-on-error: true
+
+  # Job 5: Create deployment summary
+  summary:
+    name: Deployment Summary
+    runs-on: ubuntu-latest
+    needs: [test, deploy]
+    if: always()
+
+    steps:
+      - name: Print summary
+        run: |
+          echo "✅ Tests: ${{ needs.test.result }}"
+          echo "✅ Deploy: ${{ needs.deploy.result }}"
+          echo ""
+          echo "🎉 Pipeline completed!"
+          echo "📍 Service: https://hiring-sprint-2025.onrender.com"
+          echo "📚 API Docs: https://hiring-sprint-2025.onrender.com/docs"
