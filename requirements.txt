@@ -1,8 +1,4 @@
 # --- Fix Render build issues ---
-pip>=25.0
-setuptools>=68.0
-wheel>=0.40.0
-
 # --- Your app dependencies ---
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
